@@ -1,0 +1,29 @@
+@"
+# secrets
+.env
+.env.*
+!.env.example
+
+# scan results
+db_docs/
+.dbdoc/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# virtual environments
+.venv/
+venv/
+my_env/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+"@ | Set-Content -Path .gitignore -Encoding ascii
