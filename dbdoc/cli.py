@@ -54,19 +54,29 @@ def _server_from_odbc(odbc: str) -> str | None:
                  if part.strip().lower().startswith("server=")), None)
 
 
+def _load_env() -> bool | None:
+    """Load .env (found by walking up from this package's folder, i.e. the project folder).
+    Returns True/False for found/not found, None if python-dotenv is missing."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return None
+    return load_dotenv(override=True)  # .env wins over stale variables in the terminal
+
+
 def main(argv=None) -> int:
+    # .env must be loaded before parsing: option defaults come from DBDOC_PROVIDER / DBDOC_LANGUAGE.
+    env_found = _load_env()
     args = parse_args(argv)
     log.VERBOSE, log.QUIET = args.verbose, args.quiet and not args.verbose
     run_started = time.time()
 
     log.banner("dbdoc-agent: documenting the database as Markdown")
-    try:
-        from dotenv import load_dotenv
-        found = load_dotenv(override=True)  # .env wins over stale variables in the terminal
-        log.info("Loaded settings from .env" if found else
-                 "No .env file found in this folder: using environment variables only")
-    except ImportError:
+    if env_found is None:
         log.warn("python-dotenv is not installed: .env is ignored (pip install python-dotenv)")
+    else:
+        log.info("Loaded settings from .env" if env_found else
+                 "No .env file found in the project folder: using environment variables only")
 
     out = Path(args.out)
     (out / "tables").mkdir(parents=True, exist_ok=True)

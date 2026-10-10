@@ -6,7 +6,7 @@ An LLM agent that analyzes an **Azure SQL** database and writes local documentat
 
 For each table or view:
 
-1. **Profiling (no LLM).** The tool reads the columns, data types, primary key, declared foreign keys, existing `MS_Description` comments, and the row count (from metadata, without scanning the table). From a `TOP (n)` sample of rows it then computes, per column: the share of NULLs, the number of distinct values, the value distribution for code-like columns, and min/max.
+1. **Profiling (no LLM).** The tool reads the columns, data types, primary key, declared foreign keys, existing `MS_Description` comments, and the row count (for Azure SQL tables read from metadata, without scanning the table; for views a `COUNT(*)`). From a `TOP (n)` sample of rows it then computes, per column: the share of NULLs, the number of distinct values, the value distribution for code-like columns, and min/max.
 2. **Investigation (agent).** The model receives the table profile and the list of all other tables. It has two tools:
    - `run_sql` runs one read-only `SELECT` (validated, at most 50 result rows);
    - `submit_documentation` returns the structured result: a summary, the grain (what one row represents), column descriptions, meanings of coded values, relationships, data-quality notes and example queries.
@@ -57,7 +57,7 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```powershell
 python --version
 python -c "import pyodbc; print(pyodbc.drivers())"          # must list 'ODBC Driver 18 for SQL Server'
-python -c "import azure.identity, anthropic, sqlglot; print('ok')"
+python -c "import azure.identity, anthropic, openai, sqlglot, dotenv; print('ok')"
 ```
 
 **VS Code tips**
@@ -67,18 +67,20 @@ python -c "import azure.identity, anthropic, sqlglot; print('ok')"
 
 ## Configuration (`.env`)
 
-The agent loads `.env` from the current folder (run it from the project folder). Values in `.env` override variables already set in the terminal. Write each setting on one line, without quotes around the value.
+The agent loads `.env` from the project folder (the folder that contains `dbdoc`). Values in `.env` override variables already set in the terminal, and command-line options override `.env`. Write each setting on one line, without quotes around the value. `.env.example` lists every setting, grouped by connection option and LLM provider.
 
 | Variable | Meaning |
 |---|---|
 | `AZURE_SQL_ODBC` | ODBC connection string, e.g. `Driver={ODBC Driver 18 for SQL Server};Server=tcp:<server>.database.windows.net,1433;Database=<db>;Encrypt=yes;ApplicationIntent=ReadOnly` |
 | `AZURE_SQL_AUTH` | Microsoft Entra ID sign-in mode: `browser`, `device`, `cli` or `default` (see below). Leave empty for a SQL login in the connection string. |
 | `AZURE_TENANT_ID` | Tenant of the SQL server. Needed when your account belongs to several tenants or is a guest. |
-| `DB_URL` | Alternative to `AZURE_SQL_ODBC`: any SQLAlchemy URL (e.g. `sqlite:///test.db`) |
-| `DBDOC_PROVIDER` | `anthropic`, `azure_openai`, `openai` or `none` |
-| `DBDOC_LANGUAGE` | Language of the descriptions, e.g. `English`, `Polish` |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude settings |
-| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION` | Azure OpenAI settings. Leave the key empty to sign in with Entra ID. |
+| `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Only for `AZURE_SQL_AUTH=default` with a service principal (together with `AZURE_TENANT_ID`). |
+| `DB_URL` | Alternative to `AZURE_SQL_ODBC`: any SQLAlchemy URL (e.g. `sqlite:///test.db`). Ignored when `AZURE_SQL_ODBC` is set. |
+| `DBDOC_PROVIDER` | `anthropic` (default), `azure_openai`, `openai` or `none`. Same as `--provider`. |
+| `DBDOC_LANGUAGE` | Language of the descriptions, e.g. `English` (default), `Polish`. Same as `--language`. |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Claude settings. Model default: `claude-sonnet-5-5`. |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION` | Azure OpenAI settings (API version default: `2024-10-21`). Leave the key empty to sign in with Entra ID: this uses `DefaultAzureCredential` (for example your `az login`), not `AZURE_SQL_AUTH`, and your account needs the *Cognitive Services OpenAI User* role on the resource. |
+
 
 ## Signing in with Microsoft Entra ID (MFA)
 
@@ -94,7 +96,8 @@ python -m dbdoc --auth device
 # reuse an earlier `az login --tenant <tenant-id>` (MFA happens there)
 python -m dbdoc --auth cli
 
-# unattended runs in Azure (managed identity) or with a service principal in environment variables
+# unattended runs in Azure (managed identity) or with a service principal
+# (AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET in .env)
 python -m dbdoc --auth default
 ```
 
@@ -152,13 +155,13 @@ Open the result in Explorer with `explorer .\db_docs`, or in VS Code with `code 
 | Option | Meaning |
 |---|---|
 | `--out` | Output folder (default `db_docs`) |
-| `--schema` / `--all-schemas` | Which schemas to document (default: the login's default schema, usually `dbo`) |
+| `--schema` / `--all-schemas` | Which schemas to document (default: the login's default schema, usually `dbo`). Repeat `--schema` for several, e.g. `--schema dbo --schema sales` |
 | `--tables`, `--exclude` | Name patterns, e.g. `dbo.Fact*` |
 | `--no-views` | Skip views |
-| `--auth` | Entra ID sign-in mode: `browser`, `device`, `cli`, `default` |
-| `--provider` | `anthropic`, `azure_openai`, `openai`, `none` |
-| `--model` | Model name (for Azure: the deployment name) |
-| `--language` | Language of the descriptions |
+| `--auth` | Entra ID sign-in mode: `browser`, `device`, `cli`, `default` (overrides `AZURE_SQL_AUTH`) |
+| `--provider` | `anthropic`, `azure_openai`, `openai`, `none` (default: `DBDOC_PROVIDER`, else `anthropic`) |
+| `--model` | Model name (for Azure: the deployment name). Default: `ANTHROPIC_MODEL`, `AZURE_OPENAI_DEPLOYMENT` or `OPENAI_MODEL` |
+| `--language` | Language of the descriptions (default: `DBDOC_LANGUAGE`, else `English`) |
 | `--max-steps` | Tool-call budget per table (default 12) |
 | `--sample-rows` | Sample size for profiling (default 5000) |
 | `--no-sample-values` | Send only statistics to the model, no example values |
@@ -190,6 +193,8 @@ To save the full log to a file while still seeing it on screen:
 python -m dbdoc --auth browser 2>&1 | Tee-Object -FilePath run.log
 ```
 
+**Exit codes** (useful in scripts and scheduled runs): `0` all objects done, `1` configuration problem (no database set, invalid connection string, LLM setup failed, no tables found), `2` finished but some objects failed, `3` Entra ID sign-in failed, `4` could not connect to the database.
+
 The ✓ → ✗ symbols display correctly in Windows Terminal and the VS Code terminal. In the old `cmd.exe` console they may show as `?`; the program keeps working.
 
 ## Incremental runs and manual notes
@@ -211,12 +216,13 @@ The ✓ → ✗ symbols display correctly in Windows Terminal and the VS Code te
 | `Selected user account does not exist in tenant 'Microsoft Services'` | Set `AZURE_TENANT_ID` to the tenant of the SQL server. A personal or guest account must first be invited to that tenant. |
 | `Named Pipes Provider ... Login timeout expired` | The server can't be reached: check `Server=tcp:<name>.database.windows.net,1433` and test in PowerShell with `Test-NetConnection <name>.database.windows.net -Port 1433` (`TcpTestSucceeded : True` is expected). Corporate networks or VPNs sometimes block port 1433. |
 | `Client with IP address ... is not allowed` | Add your IP in the Azure portal: SQL server → Networking → Firewall rules. |
+| `With AZURE_SQL_AUTH set, remove Authentication/Uid/Pwd from AZURE_SQL_ODBC` | Either delete `Authentication=`, `Uid=` and `Pwd=` from the connection string (Entra token login), or leave `AZURE_SQL_AUTH` empty and don't pass `--auth` (SQL login or driver-handled Entra login). |
 | `Login failed for user '<token-identified principal>'` | Create the user in the database (`CREATE USER ... FROM EXTERNAL PROVIDER`) and grant `db_datareader`. |
 | `ModuleNotFoundError: No module named 'azure'` | Activate the virtual environment (`.\.venv\Scripts\Activate.ps1`) and run `python -m pip install -r requirements.txt`. In VS Code, check that the `.venv` interpreter is selected. |
 | `Data source name not found and no default driver specified` | The ODBC driver in `Driver={...}` isn't installed: `winget install Microsoft.msodbcsql.18`, then open a new terminal. |
 | `running scripts is disabled on this system` | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
 | `401 authentication_error: API key is invalid` | Replace the placeholder `ANTHROPIC_API_KEY` with a real key from console.anthropic.com (API access is billed separately from Claude.ai plans), or switch to `DBDOC_PROVIDER=azure_openai`. |
-| Edits to `.env` seem ignored | Open a new terminal; `.env` values override variables the terminal already has. |
+| Edits to `.env` seem ignored | Make sure `.env` is in the project folder (next to `dbdoc`), not in a subfolder. Command-line options such as `--provider` win over `.env`. |
 
 ## Tests
 
@@ -224,7 +230,7 @@ The ✓ → ✗ symbols display correctly in Windows Terminal and the VS Code te
 python -m pytest -q
 ```
 
-The tests run offline: they use SQLite instead of Azure SQL and a scripted LLM instead of a real model. They cover the SQL validator, profiling, the agent loop, file generation, incremental runs, keeping manual notes, Entra token handling and the progress messages.
+The tests run offline: they use SQLite instead of Azure SQL and a scripted LLM instead of a real model. They never read your `.env` (see `tests/conftest.py`), so they don't sign in or connect to your server. They cover the SQL validator, profiling, the agent loop, file generation, incremental runs, keeping manual notes, Entra token handling and the progress messages.
 
 ## Code structure
 
@@ -237,3 +243,4 @@ The tests run offline: they use SQLite instead of Azure SQL and a scripted LLM i
 | `dbdoc/markdown.py` | Markdown files, index, ER diagram, cache |
 | `dbdoc/log.py` | Timestamped progress messages |
 | `dbdoc/cli.py` | Command line |
+| `tests/` | Offline tests (`conftest.py` keeps them away from your `.env`) |
